@@ -21,7 +21,7 @@ Both hit the same CRM and the same scoring rules, so the dashboard is a window o
 
 ## What this system does
 
-1. **Discover** — pull candidate businesses from public listing/sample feeds (city + category filters).
+1. **Discover** — pull candidate businesses from **OpenStreetMap** (public Overpass API, no API key) with offline sample fallback.
 2. **Normalize & upsert** — write into SQLite/Postgres CRM (`leads`, `outreach_events`, `suppressions`).
 3. **Score (CPU)** — rule-based scoring (no LLM): website presence, phone/email completeness, category fit, metro priority.
 4. **Draft outreach** — template + optional light rewrite; never auto-send.
@@ -78,18 +78,35 @@ streamlit run dashboard.py
 Then in the browser (`http://localhost:8501`):
 
 1. **Create CRM tables** in the sidebar (first run only).
-2. Pick a metro/category, click **Find businesses**.
-3. Click **Score leads** — deterministic rules, no AI spend.
-4. Click **Prepare drafts**, review them under **Outreach**.
-5. **Preview send list**, tick the approval box, then send (needs Google Workspace `gog` sign-in; otherwise stay in preview).
+2. Leave **Data source** on *OpenStreetMap (fallback to sample)* — **no API key**.
+3. Pick a metro/category, click **Find businesses**.
+4. Click **Score leads** — deterministic rules, no AI spend.
+5. Click **Prepare drafts**, review them under **Outreach**.
+6. **Preview send list**, tick the approval box, then send (needs Google Workspace `gog` sign-in; otherwise stay in preview).
 
 Tabs: **Run pipeline**, **Leads** (filter + CSV export), **Outreach** (approval queue + history), **Insights** (status/website/metro charts).
+
+### Data sources
+
+| Source | API key? | Notes |
+|---|---|---|
+| **OpenStreetMap / Overpass** | **No** | Live public map data (ODbL). Default. |
+| Offline sample JSONL | No | Used if OSM is down or returns nothing |
+| Website HTTP check | No | Optional toggle; not an API product |
+
+```bash
+# Live OSM (no key)
+python scripts/fetch_public_listings.py --metro "Austin, TX" --category "plumbing" --limit 20 --source osm
+
+# Offline only
+python scripts/fetch_public_listings.py --metro "Austin, TX" --source sample
+```
 
 ## Quick start — CLI / automation
 
 ```bash
 python scripts/crm_init.py
-python scripts/fetch_public_listings.py --metro "Austin, TX" --category "hvac" --limit 25
+python scripts/fetch_public_listings.py --metro "Austin, TX" --category "plumbing" --limit 25 --source auto
 python scripts/score_leads.py --min-score 55
 python scripts/draft_outreach.py --limit 10
 python scripts/send_outreach.py --limit 5          # preview; add --execute to send

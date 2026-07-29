@@ -23,7 +23,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from common import ROOT as SCRIPT_ROOT, connect, db_path, load_weights  # noqa: E402
 from draft_outreach import TEMPLATE_ID, render, suppressed  # noqa: E402
-from fetch_public_listings import load_candidates, upsert  # noqa: E402
+from fetch_public_listings import collect_candidates, upsert  # noqa: E402
+from osm_source import known_categories, known_metros  # noqa: E402
 from score_leads import score_row  # noqa: E402
 from send_outreach import send_via_gog  # noqa: E402
 
@@ -64,28 +65,33 @@ def query_df(sql: str, params: tuple = ()) -> pd.DataFrame:
     return pd.DataFrame([dict(r) for r in rows])
 
 
-def sample_options() -> tuple[list[str], list[str]]:
+def discovery_options() -> tuple[list[str], list[str]]:
+    metros = set(known_metros())
+    cats = set(known_categories())
     sample = Path(os.getenv("NORTHLINE_SAMPLE_PATH", "data/samples/public_listings.jsonl"))
     if not sample.is_absolute():
         sample = ROOT / sample
-    metros: set[str] = set()
-    cats: set[str] = set()
     if sample.exists():
         for line in sample.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             row = json.loads(line)
-            metros.add(row.get("metro", ""))
-            cats.add(row.get("category", ""))
-    return sorted(m for m in metros if m), sorted(c for c in cats if c)
+            if row.get("metro"):
+                metros.add(row["metro"])
+            if row.get("category"):
+                cats.add(row["category"])
+    return sorted(metros), sorted(cats)
 
 
-def run_discovery(metro: str, category: str, limit: int, live: bool) -> list[dict]:
-    sample = Path(os.getenv("NORTHLINE_SAMPLE_PATH", "data/samples/public_listings.jsonl"))
-    if not sample.is_absolute():
-        sample = ROOT / sample
-    candidates = load_candidates(sample, metro or None, category or None, limit)
-    return [upsert(c, live=live) for c in candidates]
+def run_discovery(metro: str, category: str, limit: int, live: bool, source: str) -> tuple[list[dict], str, str | None]:
+    candidates, used, warning = collect_candidates(
+        metro=metro or None,
+        category=category or None,
+        limit=limit,
+        source=source,
+    )
+    upserted = [upsert(c, live=live) for c in candidates]
+    return upserted, used, warning
 
 
 def run_scoring(min_score: int) -> pd.DataFrame:
@@ -206,13 +212,24 @@ with st.sidebar:
     else:
         st.success("CRM ready")
 
-    metros, categories = sample_options()
+    metros, categories = discovery_options()
     st.divider()
     st.subheader("Discovery filters")
-    metro = st.selectbox("Metro", ["All"] + metros)
+    data_source = st.selectbox(
+        "Data source",
+        options=["auto", "osm", "sample"],
+        format_func=lambda x: {
+            "auto": "OpenStreetMap (fallback to sample)",
+            "osm": "OpenStreetMap only",
+            "sample": "Offline sample file only",
+        }[x],
+        help="OSM Overpass is free public open data — no API key.",
+    )
+    metro = st.selectbox("Metro", metros, index=metros.index("Austin, TX") if "Austin, TX" in metros else 0)
     category = st.selectbox("Category", ["All"] + categories)
     limit = st.slider("Max listings", 5, 100, 25, step=5)
     live_check = st.toggle("Verify websites over HTTP", value=False, help="Off = offline heuristics only")
+    st.caption("Live OSM needs internet. No API key required.")
 
     st.divider()
     st.subheader("Qualification")
@@ -227,7 +244,7 @@ with st.sidebar:
             conn.commit()
         st.rerun()
 
-metro_arg = "" if metro == "All" else metro
+metro_arg = metro
 category_arg = "" if category == "All" else category
 
 leads_df = query_df("SELECT * FROM leads")
@@ -257,11 +274,16 @@ with tab_run:
 
     with s1:
         st.markdown("**1. Discover**")
-        st.caption("Pull public business listings into the CRM.")
+        st.caption("Pull public businesses from OpenStreetMap (or sample fallback).")
         if st.button("Find businesses", type="primary", use_container_width=True):
-            found = run_discovery(metro_arg, category_arg, limit, live_check)
+            with st.spinner("Querying OpenStreetMap…"):
+                found, used, warning = run_discovery(metro_arg, category_arg, limit, live_check, data_source)
             st.session_state["last_discovery"] = found
-            st.success(f"Added or refreshed {len(found)} listings.")
+            st.session_state["last_source"] = used
+            st.session_state["last_warning"] = warning
+            if warning:
+                st.warning(warning)
+            st.success(f"Added or refreshed {len(found)} listings from **{used}**.")
             st.rerun()
 
     with s2:
@@ -281,6 +303,11 @@ with tab_run:
             drafts = run_drafting(int(draft_limit), min_score)
             st.success(f"Prepared {len(drafts)} drafts.")
             st.rerun()
+
+    if st.session_state.get("last_source"):
+        st.info(f"Last discovery source: **{st.session_state['last_source']}** (no API key).")
+    if st.session_state.get("last_warning"):
+        st.warning(st.session_state["last_warning"])
 
     if st.session_state.get("last_discovery"):
         st.divider()
@@ -317,6 +344,7 @@ with tab_leads:
             "phone",
             "email",
             "website_status",
+            "source",
             "score",
             "status",
             "updated_at",
