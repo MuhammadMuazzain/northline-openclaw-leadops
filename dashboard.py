@@ -26,7 +26,7 @@ from draft_outreach import TEMPLATE_ID, render, suppressed  # noqa: E402
 from fetch_public_listings import collect_candidates, upsert  # noqa: E402
 from osm_source import known_categories, known_metros  # noqa: E402
 from score_leads import score_row  # noqa: E402
-from send_outreach import send_via_gog  # noqa: E402
+from send_outreach import gog_account, process_drafts, send_via_gog  # noqa: E402
 
 STATUS_COLORS = {
     "new": "#94a3b8",
@@ -154,48 +154,8 @@ def run_drafting(limit: int, min_score: int) -> list[dict]:
     return drafts
 
 
-def send_drafts(limit: int, execute: bool) -> list[dict]:
-    results = []
-    with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT e.id AS event_id, e.subject, e.body, l.id AS lead_id, l.email, l.business_name
-            FROM outreach_events e JOIN leads l ON l.id = e.lead_id
-            WHERE e.status='drafted' ORDER BY e.created_at ASC LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        for row in rows:
-            if not execute:
-                results.append(
-                    {
-                        "business_name": row["business_name"],
-                        "to": row["email"],
-                        "subject": row["subject"],
-                        "status": "preview",
-                    }
-                )
-                continue
-            ok, ref = send_via_gog(row["email"], row["subject"], row["body"])
-            status = "sent" if ok else "failed"
-            conn.execute(
-                "UPDATE outreach_events SET status=?, provider_ref=?, error=?, actor='dashboard' WHERE id=?",
-                (status, ref if ok else None, None if ok else ref, row["event_id"]),
-            )
-            if ok:
-                conn.execute("UPDATE leads SET status='contacted', updated_at=datetime('now') WHERE id=?", (row["lead_id"],))
-            results.append(
-                {
-                    "business_name": row["business_name"],
-                    "to": row["email"],
-                    "subject": row["subject"],
-                    "status": status,
-                    "detail": ref,
-                }
-            )
-        conn.commit()
-    return results
-
+def send_drafts(limit: int, execute: bool = False, simulate: bool = False) -> list[dict]:
+    return process_drafts(limit, execute=execute, simulate=simulate)
 
 st.title("📍 Northline Lead Ops")
 st.caption("Local-first prospecting: discover public listings → score → outreach, with approval before anything sends.")
@@ -393,17 +353,35 @@ with tab_outreach:
                 st.text_area("Body", body.iloc[0]["body"], height=220, disabled=True)
 
         send_limit = st.number_input("How many to process", 1, 50, min(5, len(drafted)))
-        p1, p2 = st.columns(2)
+        account = gog_account() or "(set OUTREACH_GMAIL_ACCOUNT in .env, or gog will use its default)"
+        st.caption(f"Gmail account for live send: {account}")
+
+        p1, p2, p3 = st.columns(3)
         with p1:
             if st.button("Preview send list", use_container_width=True):
                 st.session_state["send_preview"] = send_drafts(int(send_limit), execute=False)
         with p2:
             approved = st.checkbox("I reviewed these recipients and approve sending")
-            if st.button("Send approved emails", type="primary", disabled=not approved, use_container_width=True):
+            if st.button("Send via Gmail (gog)", type="primary", disabled=not approved, use_container_width=True):
                 out = send_drafts(int(send_limit), execute=True)
+                st.session_state["send_result"] = out
                 failures = [r for r in out if r["status"] == "failed"]
                 if failures:
-                    st.error(f"{len(failures)} failed — check Google Workspace (gog) sign-in.")
+                    st.error(f"{len(failures)} failed.")
+                    st.code(failures[0].get("error") or failures[0].get("detail") or "unknown error")
+                    st.info(
+                        "Most common fix: re-authorize gog in a terminal:\n"
+                        "gog auth add YOUR_EMAIL@gmail.com --services gmail"
+                    )
+                else:
+                    st.success(f"Sent {len(out)} emails.")
+                st.dataframe(pd.DataFrame(out), use_container_width=True, hide_index=True)
+        with p3:
+            sim_ok = st.checkbox("Demo only: mark as sent locally")
+            if st.button("Simulate send", disabled=not sim_ok, use_container_width=True):
+                out = send_drafts(int(send_limit), simulate=True)
+                st.session_state["send_result"] = out
+                st.warning(f"Marked {len(out)} as sent locally (no Gmail call). Use for demos when OAuth is down.")
                 st.dataframe(pd.DataFrame(out), use_container_width=True, hide_index=True)
 
         if st.session_state.get("send_preview"):
