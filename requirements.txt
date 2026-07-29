@@ -1,0 +1,4 @@
+# Northline OpenClaw Lead Ops — CLI dependencies
+# Standard library covers sqlite3/csv/json; these are optional extras.
+python-dotenv>=1.0.0
+requests>=2.31.0

@@ -1,0 +1,28 @@
+{
+  "category_fit": {
+    "hvac": 25,
+    "plumbing": 25,
+    "roofing": 20,
+    "electrical": 20,
+    "landscaping": 15,
+    "default": 10
+  },
+  "metro_priority": {
+    "Austin, TX": 15,
+    "Dallas, TX": 12,
+    "Houston, TX": 12,
+    "default": 5
+  },
+  "website_status": {
+    "none": 30,
+    "social_only": 20,
+    "parked": 15,
+    "unknown": 5,
+    "active": -25
+  },
+  "contact_bonus": {
+    "has_phone": 10,
+    "has_email": 20
+  },
+  "min_queue_score": 55
+}
