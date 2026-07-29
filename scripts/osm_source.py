@@ -22,6 +22,16 @@ USER_AGENT = "NorthlineLeadOps/1.0 (portfolio demo; contact: github.com/Muhammad
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 
+# Public Overpass mirrors, tried in order. The main endpoint frequently returns
+# 429/504 under load, so a single failure must not fall back to sample data.
+OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+]
+RETRY_STATUS = {429, 502, 503, 504}
+
 # south, west, north, east
 METRO_BBOX: dict[str, tuple[float, float, float, float]] = {
     "Austin, TX": (30.10, -98.05, 30.55, -97.50),
@@ -144,11 +154,40 @@ def _element_to_row(el: dict[str, Any], metro: str, category: str) -> dict[str, 
     }
 
 
+def _post_overpass(query: str, endpoints: list[str], attempts_per_endpoint: int = 2) -> dict[str, Any]:
+    """
+    POST an Overpass query, walking mirrors and retrying transient failures.
+    Raises the last error only after every endpoint has been tried.
+    """
+    last_error: Exception | None = None
+    for endpoint in endpoints:
+        for attempt in range(attempts_per_endpoint):
+            try:
+                r = requests.post(
+                    endpoint,
+                    data={"data": query},
+                    headers={"User-Agent": USER_AGENT},
+                    timeout=90,
+                )
+                if r.status_code in RETRY_STATUS:
+                    last_error = RuntimeError(f"{r.status_code} from {endpoint}")
+                    if attempt + 1 < attempts_per_endpoint:
+                        time.sleep(2 * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                return r.json()
+            except Exception as e:  # network error, bad JSON, non-retry HTTP
+                last_error = e
+                if attempt + 1 < attempts_per_endpoint:
+                    time.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"all Overpass endpoints failed; last error: {last_error}")
+
+
 def fetch_osm_listings(
     metro: str,
     category: str | None = None,
     limit: int = 25,
-    overpass_url: str = OVERPASS_URL,
+    overpass_url: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Fetch business-like POIs from OpenStreetMap for a metro/category.
@@ -166,15 +205,9 @@ def fetch_osm_listings(
         # unknown category label still stored on rows; query default trade tags
         tags = DEFAULT_TAGS
 
+    endpoints = [overpass_url] if overpass_url else list(OVERPASS_MIRRORS)
     query = _overpass_query(bbox, tags, limit)
-    r = requests.post(
-        overpass_url,
-        data={"data": query},
-        headers={"User-Agent": USER_AGENT},
-        timeout=90,
-    )
-    r.raise_for_status()
-    payload = r.json()
+    payload = _post_overpass(query, endpoints)
     elements = payload.get("elements") or []
 
     rows: list[dict[str, Any]] = []
