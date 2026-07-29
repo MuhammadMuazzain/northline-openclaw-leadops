@@ -1,6 +1,19 @@
 # Handover — Northline Home Services
 
-## Daily ops
+## Daily ops — dashboard (no terminal)
+
+```bash
+streamlit run dashboard.py
+```
+
+1. **Run pipeline** tab → Find businesses → Score leads → Prepare drafts.
+2. **Outreach** tab → Preview send list → tick approval → Send.
+3. **Leads** tab → filter and export CSV for the sales call list.
+4. **Insights** tab → status funnel, website presence, metro split.
+
+Sending requires Google Workspace `gog` sign-in on the host. Without it, previews still work and nothing leaves the machine.
+
+## Daily ops — agent / scheduled
 
 1. Run discover for target metros/categories.
 2. Run score-and-queue.

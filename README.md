@@ -8,6 +8,17 @@ Designed to run under **OpenClaw** with **`.lobster` workflows** so the agent in
 
 ---
 
+## Two ways to drive it
+
+| Interface | For whom |
+|---|---|
+| **Operator dashboard** (`streamlit run dashboard.py`) | Ops/owners — click through discover → score → approve → send |
+| **Lobster workflows + JSON CLIs** | OpenClaw agent + scheduled automation |
+
+Both hit the same CRM and the same scoring rules, so the dashboard is a window onto whatever the agent did overnight.
+
+---
+
 ## What this system does
 
 1. **Discover** — pull candidate businesses from public listing/sample feeds (city + category filters).
@@ -23,6 +34,7 @@ Sheets sync is optional (`gog sheets`) for ops that live in Google Workspace day
 ## Repo layout
 
 ```text
+dashboard.py        # Streamlit operator dashboard (non-technical view)
 workflows/          # .lobster pipelines (OpenClaw Lobster tool)
 scripts/            # small JSON-speaking CLIs (deterministic)
 sql/                # CRM schema + useful queries
@@ -46,7 +58,9 @@ config/             # example env + scoring weights
 
 ---
 
-## Quick start (offline demo)
+## Quick start — dashboard (recommended)
+
+No API keys needed; the demo runs entirely offline on sample listings.
 
 ```bash
 git clone https://github.com/MuhammadMuazzain/northline-openclaw-leadops.git
@@ -58,10 +72,27 @@ python -m venv .venv
 pip install -r requirements.txt
 
 cp config/env.example .env
+streamlit run dashboard.py
+```
+
+Then in the browser (`http://localhost:8501`):
+
+1. **Create CRM tables** in the sidebar (first run only).
+2. Pick a metro/category, click **Find businesses**.
+3. Click **Score leads** — deterministic rules, no AI spend.
+4. Click **Prepare drafts**, review them under **Outreach**.
+5. **Preview send list**, tick the approval box, then send (needs Google Workspace `gog` sign-in; otherwise stay in preview).
+
+Tabs: **Run pipeline**, **Leads** (filter + CSV export), **Outreach** (approval queue + history), **Insights** (status/website/metro charts).
+
+## Quick start — CLI / automation
+
+```bash
 python scripts/crm_init.py
 python scripts/fetch_public_listings.py --metro "Austin, TX" --category "hvac" --limit 25
 python scripts/score_leads.py --min-score 55
-python scripts/draft_outreach.py --limit 10 --dry-run
+python scripts/draft_outreach.py --limit 10
+python scripts/send_outreach.py --limit 5          # preview; add --execute to send
 ```
 
 With Lobster CLI installed ([openclaw/lobster](https://github.com/openclaw/lobster)):
