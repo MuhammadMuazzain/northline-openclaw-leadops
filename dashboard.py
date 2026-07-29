@@ -227,9 +227,8 @@ with st.sidebar:
     )
     metro = st.selectbox("Metro", metros, index=metros.index("Austin, TX") if "Austin, TX" in metros else 0)
     category = st.selectbox("Category", ["All"] + categories)
-    limit = st.slider("Max listings", 5, 100, 25, step=5)
     live_check = st.toggle("Verify websites over HTTP", value=False, help="Off = offline heuristics only")
-    st.caption("Live OSM needs internet. No API key required.")
+    st.caption("Live OSM needs internet. No API key required. Set how many to find on the Run pipeline tab.")
 
     st.divider()
     st.subheader("Qualification")
@@ -275,20 +274,30 @@ with tab_run:
     with s1:
         st.markdown("**1. Discover**")
         st.caption("Pull public businesses from OpenStreetMap (or sample fallback).")
+        find_count = st.number_input(
+            "How many businesses to find",
+            min_value=1,
+            max_value=100,
+            value=25,
+            step=1,
+            key="find_count",
+        )
         if st.button("Find businesses", type="primary", use_container_width=True):
-            with st.spinner("Querying OpenStreetMap…"):
-                found, used, warning = run_discovery(metro_arg, category_arg, limit, live_check, data_source)
+            with st.spinner(f"Finding up to {int(find_count)} businesses…"):
+                found, used, warning = run_discovery(
+                    metro_arg, category_arg, int(find_count), live_check, data_source
+                )
             st.session_state["last_discovery"] = found
             st.session_state["last_source"] = used
             st.session_state["last_warning"] = warning
             if warning:
                 st.warning(warning)
-            st.success(f"Added or refreshed {len(found)} listings from **{used}**.")
+            st.success(f"Added or refreshed {len(found)} of {int(find_count)} requested from **{used}**.")
             st.rerun()
 
     with s2:
         st.markdown("**2. Score**")
-        st.caption("Deterministic CPU rules — no AI cost.")
+        st.caption("Ranks each lead with fixed rules on website, contacts, and category fit.")
         if st.button("Score leads", use_container_width=True):
             scored = run_scoring(min_score)
             st.session_state["last_scored"] = scored
@@ -297,7 +306,7 @@ with tab_run:
 
     with s3:
         st.markdown("**3. Draft outreach**")
-        st.caption("Creates drafts only — nothing is sent here.")
+        st.caption("Writes email drafts for review. Nothing leaves your machine yet.")
         draft_limit = st.number_input("How many drafts", 1, 50, 5, key="draft_limit")
         if st.button("Prepare drafts", use_container_width=True):
             drafts = run_drafting(int(draft_limit), min_score)
