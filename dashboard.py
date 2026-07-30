@@ -356,7 +356,7 @@ with tab_outreach:
         account = gog_account() or "(set OUTREACH_GMAIL_ACCOUNT in .env, or gog will use its default)"
         st.caption(f"Gmail account for live send: {account}")
 
-        p1, p2, p3 = st.columns(3)
+        p1, p2 = st.columns(2)
         with p1:
             if st.button("Preview send list", use_container_width=True):
                 st.session_state["send_preview"] = send_drafts(int(send_limit), execute=False)
@@ -371,17 +371,10 @@ with tab_outreach:
                     st.code(failures[0].get("error") or failures[0].get("detail") or "unknown error")
                     st.info(
                         "Most common fix: re-authorize gog in a terminal:\n"
-                        "gog auth add YOUR_EMAIL@gmail.com --services gmail"
+                        "gog auth add YOUR_EMAIL@gmail.com --client personal --services gmail"
                     )
                 else:
                     st.success(f"Sent {len(out)} emails.")
-                st.dataframe(pd.DataFrame(out), use_container_width=True, hide_index=True)
-        with p3:
-            sim_ok = st.checkbox("Demo only: mark as sent locally")
-            if st.button("Simulate send", disabled=not sim_ok, use_container_width=True):
-                out = send_drafts(int(send_limit), simulate=True)
-                st.session_state["send_result"] = out
-                st.warning(f"Marked {len(out)} as sent locally (no Gmail call). Use for demos when OAuth is down.")
                 st.dataframe(pd.DataFrame(out), use_container_width=True, hide_index=True)
 
         if st.session_state.get("send_preview"):
