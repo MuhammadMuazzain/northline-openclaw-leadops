@@ -26,6 +26,7 @@ Both hit the same CRM and the same scoring rules, so the dashboard is a window o
 3. **Score (CPU)** — rule-based scoring (no LLM): website presence, phone/email completeness, category fit, metro priority.
 4. **Draft outreach** — template + optional light rewrite; never auto-send.
 5. **Approve & send** — Lobster `approval` gate, then Gmail via `gog` (or dry-run JSON).
+6. **Qualify from replies** — ingest inbound email, classify interest/meeting/decline/unsubscribe with deterministic rules, update CRM.
 
 Sheets sync is optional (`gog sheets`) for ops that live in Google Workspace day-to-day.
 

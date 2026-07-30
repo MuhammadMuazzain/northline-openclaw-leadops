@@ -26,7 +26,15 @@ from draft_outreach import TEMPLATE_ID, render, suppressed  # noqa: E402
 from fetch_public_listings import collect_candidates, upsert  # noqa: E402
 from osm_source import known_categories, known_metros  # noqa: E402
 from score_leads import score_row  # noqa: E402
-from send_outreach import gog_account, process_drafts, send_via_gog  # noqa: E402
+from send_outreach import gog_account, process_drafts  # noqa: E402
+from qualify_replies import (  # noqa: E402
+    ensure_reply_schema,
+    fetch_gmail_candidates,
+    load_demo_replies,
+    process_messages,
+    seed_contacted_for_demo,
+)
+
 
 STATUS_COLORS = {
     "new": "#94a3b8",
@@ -157,6 +165,35 @@ def run_drafting(limit: int, min_score: int) -> list[dict]:
 def send_drafts(limit: int, execute: bool = False, simulate: bool = False) -> list[dict]:
     return process_drafts(limit, execute=execute, simulate=simulate)
 
+
+def run_reply_qualification(source: str, max_results: int = 15) -> dict:
+    ensure_reply_schema()
+    warning = None
+    if source == "gmail":
+        try:
+            messages = fetch_gmail_candidates("in:inbox newer_than:14d -in:chats", max_results)
+            source_used = "gmail"
+        except Exception as e:
+            warning = f"Gmail fetch failed ({e}); using demo replies."
+            demo = ROOT / "data" / "samples" / "inbound_replies.jsonl"
+            seed_contacted_for_demo(demo)
+            messages = load_demo_replies(demo)
+            source_used = "demo"
+    else:
+        demo = ROOT / "data" / "samples" / "inbound_replies.jsonl"
+        seed_contacted_for_demo(demo)
+        messages = load_demo_replies(demo)
+        source_used = "demo"
+    results = process_messages(messages)
+    applied = [r for r in results if not r.get("skipped")]
+    return {
+        "source_used": source_used,
+        "warning": warning,
+        "scanned": len(messages),
+        "applied": len(applied),
+        "results": results,
+    }
+
 st.title("📍 Northline Lead Ops")
 st.caption("Local-first prospecting: discover public listings → score → outreach, with approval before anything sends.")
 
@@ -215,14 +252,20 @@ events_df = query_df(
     """
 )
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Leads in CRM", len(leads_df))
 c2.metric("Qualified", int((leads_df["status"] == "qualified").sum()) if not leads_df.empty else 0)
-c3.metric("Queued for outreach", int((leads_df["status"] == "queued").sum()) if not leads_df.empty else 0)
-c4.metric("Contacted", int((leads_df["status"] == "contacted").sum()) if not leads_df.empty else 0)
+c3.metric("Contacted", int((leads_df["status"] == "contacted").sum()) if not leads_df.empty else 0)
+c4.metric("Replied / warm", int(leads_df["status"].isin(["replied", "won"]).sum()) if not leads_df.empty else 0)
+c5.metric(
+    "Reply labels",
+    int(leads_df["qualification"].notna().sum())
+    if (not leads_df.empty and "qualification" in leads_df.columns)
+    else 0,
+)
 
-tab_run, tab_leads, tab_outreach, tab_insights = st.tabs(
-    ["▶️ Run pipeline", "🗂 Leads", "✉️ Outreach", "📊 Insights"]
+tab_run, tab_leads, tab_outreach, tab_qualify, tab_insights = st.tabs(
+    ["▶️ Run pipeline", "🗂 Leads", "✉️ Outreach", "✅ Qualify replies", "📊 Insights"]
 )
 
 with tab_run:
@@ -316,8 +359,10 @@ with tab_leads:
             "source",
             "score",
             "status",
+            "qualification",
             "updated_at",
         ]
+        cols = [c for c in cols if c in view.columns]
         st.dataframe(
             view[cols].sort_values("score", ascending=False),
             use_container_width=True,
@@ -353,10 +398,10 @@ with tab_outreach:
                 st.text_area("Body", body.iloc[0]["body"], height=220, disabled=True)
 
         send_limit = st.number_input("How many to process", 1, 50, min(5, len(drafted)))
-        account = gog_account() or "(set OUTREACH_GMAIL_ACCOUNT in .env, or gog will use its default)"
+        account = gog_account() or "(set OUTREACH_GMAIL_ACCOUNT in .env)"
         st.caption(f"Gmail account for live send: {account}")
 
-        p1, p2 = st.columns(2)
+        p1, p2, p3 = st.columns(3)
         with p1:
             if st.button("Preview send list", use_container_width=True):
                 st.session_state["send_preview"] = send_drafts(int(send_limit), execute=False)
@@ -364,17 +409,18 @@ with tab_outreach:
             approved = st.checkbox("I reviewed these recipients and approve sending")
             if st.button("Send via Gmail (gog)", type="primary", disabled=not approved, use_container_width=True):
                 out = send_drafts(int(send_limit), execute=True)
-                st.session_state["send_result"] = out
                 failures = [r for r in out if r["status"] == "failed"]
                 if failures:
                     st.error(f"{len(failures)} failed.")
                     st.code(failures[0].get("error") or failures[0].get("detail") or "unknown error")
-                    st.info(
-                        "Most common fix: re-authorize gog in a terminal:\n"
-                        "gog auth add YOUR_EMAIL@gmail.com --client personal --services gmail"
-                    )
                 else:
                     st.success(f"Sent {len(out)} emails.")
+                st.dataframe(pd.DataFrame(out), use_container_width=True, hide_index=True)
+        with p3:
+            sim_ok = st.checkbox("Demo only: mark as sent locally")
+            if st.button("Simulate send", disabled=not sim_ok, use_container_width=True):
+                out = send_drafts(int(send_limit), simulate=True)
+                st.warning(f"Marked {len(out)} as sent locally (no Gmail call).")
                 st.dataframe(pd.DataFrame(out), use_container_width=True, hide_index=True)
 
         if st.session_state.get("send_preview"):
@@ -389,6 +435,68 @@ with tab_outreach:
             use_container_width=True,
             hide_index=True,
         )
+
+with tab_qualify:
+    st.subheader("Post-reply lead qualification")
+    st.caption(
+        "After outreach, inbound replies are matched to CRM leads and classified with deterministic rules "
+        "(interested, meeting, question, not interested, unsubscribe, OOO). No LLM required."
+    )
+    q1, q2 = st.columns(2)
+    with q1:
+        reply_source = st.radio(
+            "Reply source",
+            options=["demo", "gmail"],
+            format_func=lambda x: "Demo replies (offline)" if x == "demo" else "Live Gmail inbox (gog)",
+            horizontal=True,
+        )
+    with q2:
+        max_replies = st.number_input("Max messages to scan", 1, 50, 15)
+
+    if st.button("Qualify replies now", type="primary"):
+        with st.spinner("Classifying replies…"):
+            out = run_reply_qualification(reply_source, int(max_replies))
+        st.session_state["last_qualify"] = out
+        if out.get("warning"):
+            st.warning(out["warning"])
+        st.success(
+            f"Scanned {out['scanned']} messages via **{out['source_used']}**. "
+            f"Updated {out['applied']} lead(s)."
+        )
+        st.dataframe(pd.DataFrame(out["results"]), use_container_width=True, hide_index=True)
+        st.rerun()
+
+    if st.session_state.get("last_qualify"):
+        st.markdown("**Last qualification run**")
+        st.dataframe(pd.DataFrame(st.session_state["last_qualify"]["results"]), use_container_width=True, hide_index=True)
+
+    try:
+        replies_df = query_df(
+            """
+            SELECT r.id, l.business_name, r.from_email, r.classification, r.lead_status_after,
+                   r.confidence, r.subject, r.created_at
+            FROM reply_events r
+            LEFT JOIN leads l ON l.id = r.lead_id
+            ORDER BY r.created_at DESC
+            LIMIT 100
+            """
+        )
+    except Exception:
+        replies_df = pd.DataFrame()
+        st.info("Reply tables not initialized yet. Click Qualify replies once (or Create CRM tables).")
+
+    if not replies_df.empty:
+        st.divider()
+        st.markdown("**Reply history**")
+        st.dataframe(replies_df, use_container_width=True, hide_index=True)
+
+    if not leads_df.empty and "qualification" in leads_df.columns:
+        labeled = leads_df[leads_df["qualification"].notna()][
+            ["business_name", "email", "status", "qualification", "qualification_reason", "last_reply_at"]
+        ]
+        if not labeled.empty:
+            st.markdown("**Leads with reply qualification**")
+            st.dataframe(labeled, use_container_width=True, hide_index=True)
 
 with tab_insights:
     if leads_df.empty:
