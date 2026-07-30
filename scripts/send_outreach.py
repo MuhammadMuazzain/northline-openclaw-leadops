@@ -26,19 +26,24 @@ def gog_account() -> str:
     return (os.getenv("OUTREACH_GMAIL_ACCOUNT") or os.getenv("GOG_ACCOUNT") or "").strip()
 
 
+def gog_client() -> str:
+    return (os.getenv("GOG_CLIENT") or os.getenv("OUTREACH_GOG_CLIENT") or "personal").strip()
+
+
 def explain_gog_error(raw: str) -> str:
     text = (raw or "").strip()
     lower = text.lower()
     if "gog_not_installed" in lower or "not found" in lower:
-        return "gog CLI not found on PATH. Install gog, then run: gog auth add you@gmail.com --services gmail"
+        return "gog CLI not found on PATH. Install gog, then run: gog auth add you@gmail.com --client personal --services gmail"
     if "invalid_grant" in lower or "bad request" in lower:
         return (
             "Gmail OAuth token expired or revoked. Re-auth with: "
-            "gog auth add maziright2345@gmail.com --services gmail "
-            "(use your account email), then try again."
+            "gog auth add YOUR_EMAIL --client personal --services gmail"
         )
     if "insufficient" in lower or "scope" in lower:
         return "Gmail scope missing. Re-auth with --services gmail and approve send permission."
+    if "access_denied" in lower or "verification" in lower:
+        return "OAuth app still in Testing and this account is not a test user. Use your personal client credentials."
     if not text:
         return "gog send failed with no output. Check: gog auth list"
     return text[:500]
@@ -49,7 +54,20 @@ def send_via_gog(to: str, subject: str, body: str) -> tuple[bool, str]:
     if not gog_bin:
         return False, explain_gog_error("gog_not_installed")
 
-    cmd = [gog_bin, "gmail", "send", "--to", to, "--subject", subject, "--body", body, "--json"]
+    cmd = [
+        gog_bin,
+        "gmail",
+        "send",
+        "--to",
+        to,
+        "--subject",
+        subject,
+        "--body",
+        body,
+        "--json",
+        "--client",
+        gog_client() or "personal",
+    ]
     account = gog_account()
     if account:
         cmd.extend(["-a", account])
